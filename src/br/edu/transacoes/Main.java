@@ -1,62 +1,94 @@
 package br.edu.transacoes;
 
-import java.io.IOException;
 import java.nio.file.Path;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
-/**
- * Ponto de entrada.
- *
- * Uso: java -cp out br.edu.transacoes.Main dados/transacoes.csv
- */
 public class Main {
 
-    public static void main(String[] args) {
-        String caminho = args.length > 0 ? args[0] : "dados/transacoes.csv";
+    private static void printLinha(char c, int n) {
+        for (int i = 0; i < n; i++) System.out.print(c);
+        System.out.println();
+    }
+
+    private static String[] quebrarChave(String chaveConta) {
+        // TITULAR|BANCO|AGENCIA|CONTA
+        String[] p = chaveConta.split("\\|", -1);
+        if (p.length != 4) return new String[] { chaveConta, "?", "?", "?" };
+        return p;
+    }
+
+    public static void main(String[] args) throws Exception {
+        String caminho = (args.length > 0 && args[0] != null && !args[0].isBlank())
+                ? args[0]
+                : "dados/transacoes.csv";
+
+        Path arquivo = Path.of(caminho);
 
         LeitorCSV leitor = new LeitorCSV();
-        List<Transacao> brutas;
-        try {
-            brutas = leitor.ler(Path.of(caminho));
-        } catch (IOException e) {
-            System.err.println("Nao foi possivel ler o arquivo: " + caminho);
-            System.err.println("Motivo: " + e.getMessage());
-            return;
+        List<Transacao> validas = leitor.ler(arquivo);
+
+        long ini = System.nanoTime();
+
+        ProcessadorTransacoes proc = new ProcessadorTransacoes();
+        List<Transacao> unicas = proc.removerDuplicatas(validas);
+        Map<String, List<Transacao>> porConta = proc.agruparPorContaEOrdenar(unicas);
+        Map<String, Double> saldos = proc.calcularSaldos(porConta);
+
+        long ms = (System.nanoTime() - ini) / 1_000_000;
+
+        // titulares distintos (para estatistica)
+        Set<String> titulares = new HashSet<>();
+        for (String k : porConta.keySet()) {
+            titulares.add(quebrarChave(k)[0]);
         }
 
-        long inicio = System.nanoTime();
-
-        ProcessadorTransacoes processador = new ProcessadorTransacoes();
-        List<Transacao> unicas = processador.removerDuplicatas(brutas);
-        Map<String, List<Transacao>> porConta = processador.agruparEOrdenar(unicas);
-        Map<String, Double> saldos = processador.calcularSaldos(porConta);
-
-        long ms = (System.nanoTime() - inicio) / 1_000_000;
-
-        System.out.println("=".repeat(72));
+        printLinha('=', 72);
         System.out.println("PROCESSADOR DE TRANSACOES BANCARIAS");
-        System.out.println("=".repeat(72));
+        printLinha('=', 72);
         System.out.printf("Arquivo................: %s%n", caminho);
-        System.out.printf("Transacoes lidas.......: %d%n", brutas.size());
-        System.out.printf("Linhas invalidas.......: %d%n", leitor.getLinhasInvalidas());
-        System.out.printf("Duplicatas removidas...: %d%n", processador.getDuplicatasRemovidas());
-        System.out.printf("Transacoes validas.....: %d%n", unicas.size());
-        System.out.printf("Contas distintas.......: %d%n", porConta.size());
-        System.out.printf("Tempo de processamento.: %d ms%n", ms);
+        System.out.printf("Linhas de dados lidas...: %d%n", leitor.getLinhasDadosLidas());
+        System.out.printf("Linhas invalidas........: %d%n", leitor.getLinhasInvalidas());
+        System.out.printf("Duplicatas removidas....: %d%n", proc.getDuplicatasRemovidas());
+        System.out.printf("Transacoes validas......: %d%n", validas.size());
+        System.out.printf("Transacoes apos dedup...: %d%n", unicas.size());
+        System.out.printf("Titulares distintos.....: %d%n", titulares.size());
+        System.out.printf("Contas distintas........: %d%n", porConta.size());
+        System.out.printf("Tempo de processamento..: %d ms%n", ms);
+        System.out.println();
 
-        for (Map.Entry<String, List<Transacao>> entry : porConta.entrySet()) {
-            String[] p = entry.getKey().split("\\|");
-            System.out.println();
-            System.out.println("-".repeat(72));
-            System.out.printf("TITULAR: %s   BANCO: %s   AGENCIA: %s   CONTA: %s%n",
-                    p[0], p[1], p[2], p[3]);
-            System.out.println("-".repeat(72));
-            for (Transacao t : entry.getValue()) {
+        // Impressao organizada por TITULAR -> CONTAS -> TRANSACOES
+        String titularAtual = null;
+
+        for (Map.Entry<String, List<Transacao>> e : porConta.entrySet()) {
+            String chave = e.getKey();
+            String[] p = quebrarChave(chave);
+
+            String titular = p[0];
+            String banco = p[1];
+            String agencia = p[2];
+            String conta = p[3];
+
+            if (!titular.equals(titularAtual)) {
+                titularAtual = titular;
+                printLinha('-', 72);
+                System.out.printf("TITULAR: %s%n", titularAtual);
+                printLinha('-', 72);
+            }
+
+            System.out.printf("BANCO: %s   AGENCIA: %s   CONTA: %s%n", banco, agencia, conta);
+            System.out.println("--------------------------------------------------------------------");
+
+            for (Transacao t : e.getValue()) {
                 System.out.println("  " + t);
             }
-            System.out.printf("  >> SALDO FINAL: R$ %.2f%n", saldos.get(entry.getKey()));
+
+            Double saldo = saldos.get(chave);
+            if (saldo == null) saldo = 0.0;
+
+            System.out.printf("  >> SALDO FINAL: R$ %.2f%n%n", saldo);
         }
-        System.out.println();
     }
 }
